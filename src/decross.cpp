@@ -6,8 +6,8 @@
 #include <emmintrin.h>
 #endif
 
-#include <VapourSynth.h>
-#include <VSHelper.h>
+#include <VapourSynth4.h>
+#include <VSHelper4.h>
 
 
 #ifdef _WIN32
@@ -18,7 +18,7 @@
 
 
 typedef struct DeCrossData {
-    VSNodeRef *clip;
+    VSNode *clip;
     const VSVideoInfo *vi;
 
     int nYThreshold;
@@ -26,17 +26,6 @@ typedef struct DeCrossData {
     int nMargin;
     bool bDebug;
 } DeCrossData;
-
-
-static void VS_CC deCrossInit(VSMap *in, VSMap *out, void **instanceData, VSNode *node, VSCore *core, const VSAPI *vsapi) {
-    (void)in;
-    (void)out;
-    (void)core;
-
-    DeCrossData *d = (DeCrossData *) *instanceData;
-
-    vsapi->setVideoInfo(d->vi, 1, node);
-}
 
 
 static FORCE_INLINE bool Diff(const uint8_t* pDiff0, const uint8_t* pDiff1, const int nPos, int& nMiniDiff) {
@@ -99,17 +88,26 @@ static FORCE_INLINE void EdgeCheck(const uint8_t* pSrc, uint8_t* pEdgeBuffer, co
         }
     }
 #else
-    for (int x = 4; x < nRowSizeU - 4; x++) {
-        int left = pSrc[x * 2 - 1];
-        int center = pSrc[x * 2];
-        int right = pSrc[x * 2 + 1];
+    // mirror the sse code above: it tests every luma column of the group and then folds
+    // each adjacent pair into one chroma column, so a chroma column is an edge when either
+    // of the two luma columns it covers is one
+    for (int nX = 4; nX < nRowSizeU - 4; nX += 4) {
+        for (int x = nX; x < nX + 4; x++) {
+            bool edge = false;
 
-        bool edge =
-                std::abs(left - right) > nYThreshold &&
-                ((center > left && right > center) || (left > center && center > right));
+            for (int k = 0; k < 2; k++) {
+                int left = pSrc[x * 2 + k - 1];
+                int center = pSrc[x * 2 + k];
+                int right = pSrc[x * 2 + k + 1];
 
-        for (int i = -nMargin; i <= nMargin; i++)
-            pEdgeBuffer[x + i] = pEdgeBuffer[x + i] || edge;
+                if (std::abs(left - right) > nYThreshold &&
+                    ((center > left && right > center) || (left > center && center > right)))
+                    edge = true;
+            }
+
+            for (int i = -nMargin; i <= nMargin; i++)
+                pEdgeBuffer[x + i] = pEdgeBuffer[x + i] || edge;
+        }
     }
 #endif
 }
@@ -151,10 +149,10 @@ static FORCE_INLINE void AverageChroma(const uint8_t *pSrcU, const uint8_t *pSrc
 }
 
 
-static const VSFrameRef *VS_CC deCrossGetFrame(int n, int activationReason, void **instanceData, void **frameData, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi) {
+static const VSFrame *VS_CC deCrossGetFrame(int n, int activationReason, void *instanceData, void **frameData, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi) {
     (void)frameData;
 
-    const DeCrossData *d = (const DeCrossData *) *instanceData;
+    const DeCrossData *d = (const DeCrossData *)instanceData;
 
     if (activationReason == arInitial) {
         if (n == 0 || n >= d->vi->numFrames - 1) {
@@ -166,16 +164,16 @@ static const VSFrameRef *VS_CC deCrossGetFrame(int n, int activationReason, void
         vsapi->requestFrameFilter(n, d->clip, frameCtx);
         vsapi->requestFrameFilter(n + 1, d->clip, frameCtx);
     } else if (activationReason == arAllFramesReady) {
-        const VSFrameRef *src = vsapi->getFrameFilter(n, d->clip, frameCtx);
+        const VSFrame *src = vsapi->getFrameFilter(n, d->clip, frameCtx);
 
         if (n == 0 || n >= d->vi->numFrames - 1)
             return src;
 
-        const VSFrameRef *srcP = vsapi->getFrameFilter(n - 1, d->clip, frameCtx);
-        const VSFrameRef *srcF = vsapi->getFrameFilter(n + 1, d->clip, frameCtx);
+        const VSFrame *srcP = vsapi->getFrameFilter(n - 1, d->clip, frameCtx);
+        const VSFrame *srcF = vsapi->getFrameFilter(n + 1, d->clip, frameCtx);
 
 
-        VSFrameRef *dst = vsapi->copyFrame(src, core);
+        VSFrame *dst = vsapi->copyFrame(src, core);
 
         const int nHeightU = vsapi->getFrameHeight(src, 1);
         const int nRowSizeU = vsapi->getFrameWidth(src, 1);
@@ -184,11 +182,22 @@ static const VSFrameRef *VS_CC deCrossGetFrame(int n, int activationReason, void
         const int nSrcPitchU = vsapi->getStride(src, 1);
         const int nDestPitchU = vsapi->getStride(dst, 1);
 
-        const int subSamplingH = d->vi->format->subSamplingH;
+        const int subSamplingH = d->vi->format.subSamplingH;
 
-        const uint8_t* pSrc = vsapi->getReadPtr(src, 0) + nSrcPitch2;
-        const uint8_t* pSrcP = vsapi->getReadPtr(srcP, 0) + nSrcPitch2;
-        const uint8_t* pSrcF = vsapi->getReadPtr(srcF, 0) + nSrcPitch2;
+        // luma rows belonging to one chroma row, and the luma row of a given chroma row
+        const int nLumaPerChroma = 1 << subSamplingH;
+
+        // the vertical taps reach two luma rows above and below the luma row of the chroma
+        // row being filtered, so filtering can only start once that fits inside the plane.
+        // this is row 1 for 420 but row 2 for 422, where a chroma row is a single luma row
+        const int nFirstRow = (2 + nLumaPerChroma - 1) / nLumaPerChroma;
+
+        const int nLumaTop = nSrcPitch * nLumaPerChroma * nFirstRow;
+        const int nChromaTop = nSrcPitchU * nFirstRow;
+
+        const uint8_t* pSrc = vsapi->getReadPtr(src, 0) + nLumaTop;
+        const uint8_t* pSrcP = vsapi->getReadPtr(srcP, 0) + nLumaTop;
+        const uint8_t* pSrcF = vsapi->getReadPtr(srcF, 0) + nLumaTop;
 
         const uint8_t* pSrcTT = pSrc - nSrcPitch2;
         const uint8_t* pSrcBB = pSrc + nSrcPitch2;
@@ -204,12 +213,12 @@ static const VSFrameRef *VS_CC deCrossGetFrame(int n, int activationReason, void
         const uint8_t* pSrcFT = pSrcF - nSrcPitch;
         const uint8_t* pSrcFB = pSrcF + nSrcPitch;
 
-        const uint8_t* pSrcU = vsapi->getReadPtr(src, 1) + nSrcPitchU;
-        const uint8_t* pSrcUP = vsapi->getReadPtr(srcP, 1) + nSrcPitchU;
-        const uint8_t* pSrcUF = vsapi->getReadPtr(srcF, 1) + nSrcPitchU;
-        const uint8_t* pSrcV = vsapi->getReadPtr(src, 2) + nSrcPitchU;
-        const uint8_t* pSrcVP = vsapi->getReadPtr(srcP, 2) + nSrcPitchU;
-        const uint8_t* pSrcVF = vsapi->getReadPtr(srcF, 2) + nSrcPitchU;
+        const uint8_t* pSrcU = vsapi->getReadPtr(src, 1) + nChromaTop;
+        const uint8_t* pSrcUP = vsapi->getReadPtr(srcP, 1) + nChromaTop;
+        const uint8_t* pSrcUF = vsapi->getReadPtr(srcF, 1) + nChromaTop;
+        const uint8_t* pSrcV = vsapi->getReadPtr(src, 2) + nChromaTop;
+        const uint8_t* pSrcVP = vsapi->getReadPtr(srcP, 2) + nChromaTop;
+        const uint8_t* pSrcVF = vsapi->getReadPtr(srcF, 2) + nChromaTop;
 
         const uint8_t* pSrcUTT = pSrcU - nSrcPitchU;
         const uint8_t* pSrcUBB = pSrcU + nSrcPitchU;
@@ -227,15 +236,26 @@ static const VSFrameRef *VS_CC deCrossGetFrame(int n, int activationReason, void
         const uint8_t* pSrcUMini;
         const uint8_t* pSrcVMini;
 
-        uint8_t* pDestU = vsapi->getWritePtr(dst, 1) + nDestPitchU;
-        uint8_t* pDestV = vsapi->getWritePtr(dst, 2) + nDestPitchU;
+        uint8_t* pDestU = vsapi->getWritePtr(dst, 1) + nDestPitchU * nFirstRow;
+        uint8_t* pDestV = vsapi->getWritePtr(dst, 2) + nDestPitchU * nFirstRow;
 
-        uint8_t* pEdgeBuffer = (uint8_t *)malloc(nRowSizeU);
+        // EdgeCheck updates the mask four bytes at a time and spreads it by nMargin, so it
+        // reaches up to nMargin + 3 bytes past the last column, which the padding absorbs
+        const int nEdgeBufferSize = nRowSizeU + 8;
 
-        int skip = 1 << subSamplingH;
+        uint8_t* pEdgeBuffer = (uint8_t *)malloc(nEdgeBufferSize);
 
-        for (int nY = nHeightU - skip; nY > skip; nY--) {
-            memset(pEdgeBuffer, 0, nRowSizeU);
+        if (!pEdgeBuffer) {
+            vsapi->setFilterError("DeCross: out of memory.", frameCtx);
+            vsapi->freeFrame(dst);
+            vsapi->freeFrame(srcP);
+            vsapi->freeFrame(src);
+            vsapi->freeFrame(srcF);
+            return NULL;
+        }
+
+        for (int nY = nHeightU - 1 - nFirstRow; nY > 2; nY--) {
+            memset(pEdgeBuffer, 0, nEdgeBufferSize);
 
             EdgeCheck(pSrc, pEdgeBuffer, nRowSizeU, d->nYThreshold, d->nMargin);
 
@@ -415,64 +435,77 @@ static void VS_CC deCrossCreate(const VSMap *in, VSMap *out, void *userData, VSC
 
     int err;
 
-    d.nYThreshold = int64ToIntS(vsapi->propGetInt(in, "thresholdy", 0, &err));
+    d.nYThreshold = vsapi->mapGetIntSaturated(in, "thresholdy", 0, &err);
     if (err)
         d.nYThreshold = 30;
 
-    d.nNoiseThreshold = int64ToIntS(vsapi->propGetInt(in, "noise", 0, &err));
+    d.nNoiseThreshold = vsapi->mapGetIntSaturated(in, "noise", 0, &err);
     if (err)
         d.nNoiseThreshold = 60;
 
-    d.nMargin = int64ToIntS(vsapi->propGetInt(in, "margin", 0, &err));
+    d.nMargin = vsapi->mapGetIntSaturated(in, "margin", 0, &err);
     if (err)
         d.nMargin = 1;
 
-    d.bDebug = !!vsapi->propGetInt(in, "debug", 0, &err);
+    d.bDebug = !!vsapi->mapGetInt(in, "debug", 0, &err);
 
 
     if (d.nYThreshold < 0 || d.nYThreshold > 255) {
-        vsapi->setError(out, "DeCross: thresholdy must be between 0 and 255 (inclusive).");
+        vsapi->mapSetError(out, "DeCross: thresholdy must be between 0 and 255 (inclusive).");
         return;
     }
 
     if (d.nNoiseThreshold < 0 || d.nNoiseThreshold > 255) {
-        vsapi->setError(out, "DeCross: noise must be between 0 and 255 (inclusive).");
+        vsapi->mapSetError(out, "DeCross: noise must be between 0 and 255 (inclusive).");
         return;
     }
 
     if (d.nMargin < 0 || d.nMargin > 4) {
-        vsapi->setError(out, "DeCross: margin must be between 0 and 4 (inclusive).");
+        vsapi->mapSetError(out, "DeCross: margin must be between 0 and 4 (inclusive).");
         return;
     }
 
 
-    d.clip = vsapi->propGetNode(in, "clip", 0, NULL);
+    d.clip = vsapi->mapGetNode(in, "clip", 0, NULL);
     d.vi = vsapi->getVideoInfo(d.clip);
 
-    if (!d.vi->format ||
-        (d.vi->format->id != pfYUV420P8 && d.vi->format->id != pfYUV422P8) ||
-        d.vi->width == 0 ||
-        d.vi->height == 0) {
-        vsapi->setError(out, "DeCross: only YUV420P8 and YUV422P8 with constant format and dimensions supported.");
+    uint32_t formatId = 0;
+
+    if (vsh::isConstantVideoFormat(d.vi))
+        formatId = vsapi->queryVideoFormatID(d.vi->format.colorFamily, d.vi->format.sampleType, d.vi->format.bitsPerSample,
+                                             d.vi->format.subSamplingW, d.vi->format.subSamplingH, core);
+
+    if (formatId != pfYUV420P8 && formatId != pfYUV422P8) {
+        vsapi->mapSetError(out, "DeCross: only YUV420P8 and YUV422P8 with constant format and dimensions supported.");
         vsapi->freeNode(d.clip);
         return;
     }
 
 
     DeCrossData *data = (DeCrossData *)malloc(sizeof(d));
+
+    if (!data) {
+        vsapi->mapSetError(out, "DeCross: out of memory.");
+        vsapi->freeNode(d.clip);
+        return;
+    }
+
     *data = d;
 
-    vsapi->createFilter(in, out, "DeCross", deCrossInit, deCrossGetFrame, deCrossFree, fmParallel, 0, data, core);
+    VSFilterDependency deps[] = { {data->clip, rpGeneral} };
+
+    vsapi->createVideoFilter(out, "DeCross", data->vi, deCrossGetFrame, deCrossFree, fmParallel, deps, 1, data, core);
 }
 
 
-VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegisterFunction registerFunc, VSPlugin *plugin) {
-    configFunc("com.nodame.decross", "decross", "Spatio-temporal derainbow filter", VAPOURSYNTH_API_VERSION, 1, plugin);
-    registerFunc("DeCross",
-                 "clip:clip;"
-                 "thresholdy:int:opt;"
-                 "noise:int:opt;"
-                 "margin:int:opt;"
-                 "debug:int:opt;"
-                 , deCrossCreate, 0, plugin);
+VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin *plugin, const VSPLUGINAPI *vspapi) {
+    vspapi->configPlugin("com.nodame.decross", "decross", "Spatio-temporal derainbow filter", VS_MAKE_VERSION(2, 0), VAPOURSYNTH_API_VERSION, 0, plugin);
+    vspapi->registerFunction("DeCross",
+                             "clip:vnode;"
+                             "thresholdy:int:opt;"
+                             "noise:int:opt;"
+                             "margin:int:opt;"
+                             "debug:int:opt;",
+                             "clip:vnode;"
+                             , deCrossCreate, 0, plugin);
 }
