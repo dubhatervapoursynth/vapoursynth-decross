@@ -1,7 +1,9 @@
 project('DeCross', 'cpp',
         version: '3',
-        default_options: ['cpp_std=c++11', 'buildtype=release'],
-        meson_version: '>=0.46')
+        default_options: ['cpp_std=c++17', 'buildtype=release'],
+        license: 'GPL-2.0-or-later',
+        license_files: 'LICENSE',
+        meson_version: '>=1.2.3')
 
 
 warnings = [
@@ -12,6 +14,7 @@ warnings = [
 
 cflags = [
   warnings,
+  '-fvisibility=hidden',
 ]
 
 ldflags = [
@@ -19,6 +22,7 @@ ldflags = [
 
 
 host_cpu_family = host_machine.cpu_family()
+
 
 host_system = host_machine.system()
 
@@ -37,13 +41,18 @@ sources = [
   'src/decross.cpp',
 ]
 
-deps = [
-  dependency('vapoursynth').partial_dependency(includes: true, compile_args: true),
-]
+py = import('python').find_installation(pure: false)
+
+# Ask the VapourSynth Python module where its headers live rather than going through
+# pkg-config, which is often absent on Windows and unnecessary here: the module is installed
+# alongside every VapourSynth install and knows the answer already.
+incdir = include_directories(
+  run_command(py, '-c', 'import vapoursynth as vs; print(vs.get_include())', check: true).stdout().strip(),
+)
 
 shared_module('decross',
               sources,
-              dependencies: deps,
+              include_directories: incdir,
               link_args: ldflags,
               cpp_args: cflags,
               install: true)

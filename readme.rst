@@ -73,4 +73,4 @@ Compilation
 License
 =======
 
-GNU GPL v2, like the Avisynth plugin.
+GNU GPL v2 or later, like the Avisynth plugin.
