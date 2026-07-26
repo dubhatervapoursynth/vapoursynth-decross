@@ -42,29 +42,46 @@ static FORCE_INLINE bool Diff(const T* pDiff0, const T* pDiff1, const int nPos, 
 }
 
 
-// the mask buffer is a separate allocation from the frame planes, so the stores into it
-// can never disturb the luma loads. that matters most at 8 bit, where both are unsigned
-// char and the compiler otherwise has to assume every store aliases every load
+// Detect and dilate are separate passes on purpose. Spreading each flag by nMargin while
+// stepping the columns makes consecutive iterations write the same bytes, and that loop
+// carried dependency stops the vectoriser cold. Detecting into a scratch row first leaves
+// both passes as pure elementwise work, and writing the tests with bitwise operators keeps
+// them branchless, so both vectorise. The buffers are separate allocations from the frame
+// planes, so their stores can never disturb the luma loads either.
 template <typename T>
-static FORCE_INLINE void EdgeCheck(const T* __restrict pSrc, uint8_t* __restrict pEdgeBuffer, const int nRowSizeU, const int nYThreshold, const int nMargin) {
-    // a chroma column covers two luma columns and is an edge when either of them is one
-    for (int nX = 4; nX < nRowSizeU - 4; nX += 4) {
-        for (int x = nX; x < nX + 4; x++) {
-            bool edge = false;
+static FORCE_INLINE void EdgeCheck(const T* __restrict pSrc, uint8_t* __restrict pEdgeBuffer, uint8_t* __restrict pRawEdge, const int nRowSizeU, const int nYThreshold, const int nMargin) {
+    // the columns to look at: whole groups of four, so this can run a little past
+    // nRowSizeU - 5, which is also what the rest of the filter expects
+    int nXEnd = 4;
+    while (nXEnd < nRowSizeU - 4)
+        nXEnd += 4;
 
-            for (int k = 0; k < 2; k++) {
-                int left = pSrc[x * 2 + k - 1];
-                int center = pSrc[x * 2 + k];
-                int right = pSrc[x * 2 + k + 1];
+    // detect: one raw flag per chroma column, which covers two luma columns
+    for (int x = 4; x < nXEnd; x++) {
+        int nEdge = 0;
 
-                if (std::abs(left - right) > nYThreshold &&
-                    ((center > left && right > center) || (left > center && center > right)))
-                    edge = true;
-            }
+        for (int k = 0; k < 2; k++) {
+            const int nLeft = pSrc[x * 2 + k - 1];
+            const int nCenter = pSrc[x * 2 + k];
+            const int nRight = pSrc[x * 2 + k + 1];
 
-            for (int i = -nMargin; i <= nMargin; i++)
-                pEdgeBuffer[x + i] = pEdgeBuffer[x + i] || edge;
+            nEdge |= (std::abs(nLeft - nRight) > nYThreshold) &
+                     (((nCenter > nLeft) & (nRight > nCenter)) | ((nLeft > nCenter) & (nCenter > nRight)));
         }
+
+        pRawEdge[x] = (uint8_t)nEdge;
+    }
+
+    // dilate: a column is set when any raw flag within nMargin of it is set, which is the
+    // same set spreading every flag outwards would produce. the scratch is zeroed outside
+    // the detected range, so the window needs no clamping at either end
+    for (int y = 4 - nMargin; y < nXEnd + nMargin; y++) {
+        int nEdge = 0;
+
+        for (int i = -nMargin; i <= nMargin; i++)
+            nEdge |= pRawEdge[y + i];
+
+        pEdgeBuffer[y] = (uint8_t)nEdge;
     }
 }
 
@@ -87,7 +104,7 @@ static FORCE_INLINE void AverageChroma(const T *pSrcU, const T *pSrcV, const T *
 
 
 template <typename T>
-static void DeCrossFrame(const DeCrossData *d, const VSFrame *src, const VSFrame *srcP, const VSFrame *srcF, VSFrame *dst, uint8_t *pEdgeBuffer, const int nEdgeBufferSize, const VSAPI *vsapi) {
+static void DeCrossFrame(const DeCrossData *d, const VSFrame *src, const VSFrame *srcP, const VSFrame *srcF, VSFrame *dst, uint8_t *pEdgeBuffer, uint8_t *pRawEdge, const int nEdgeBufferSize, const VSAPI *vsapi) {
     {
         // pitches are counted in samples so the same pointer maths works at every depth
         const int nHeightU = vsapi->getFrameHeight(src, 1);
@@ -165,7 +182,7 @@ static void DeCrossFrame(const DeCrossData *d, const VSFrame *src, const VSFrame
 
             memset(pEdgeBuffer, 0, nEdgeBufferSize);
 
-            EdgeCheck(pSrc, pEdgeBuffer, nRowSizeU, d->nYThreshold, d->nMargin);
+            EdgeCheck(pSrc, pEdgeBuffer, pRawEdge, nRowSizeU, d->nYThreshold, d->nMargin);
 
             if (d->bDebug) {
                 for (int nX = 4; nX < nRowSizeU - 4; nX++) {
@@ -314,13 +331,19 @@ static const VSFrame *VS_CC deCrossGetFrame(int n, int activationReason, void *i
 
         VSFrame *dst = vsapi->copyFrame(src, core);
 
-        // EdgeCheck walks the columns in groups of four and spreads each group by nMargin,
-        // so it reaches up to nMargin + 3 past the last column, which the padding absorbs
+        // EdgeCheck dilates by nMargin past the last column it looks at, which the padding
+        // absorbs. its scratch row additionally needs a little lead, because the dilation
+        // window reads below the first column, and it stays zeroed outside the detected
+        // range so that window needs no clamping
         const int nEdgeBufferSize = vsapi->getFrameWidth(src, 1) + 8;
 
         uint8_t* pEdgeBuffer = (uint8_t *)malloc(nEdgeBufferSize);
+        uint8_t* pRawAlloc = (uint8_t *)calloc(nEdgeBufferSize + 16, 1);
+        uint8_t* pRawEdge = pRawAlloc ? pRawAlloc + 8 : NULL;
 
-        if (!pEdgeBuffer) {
+        if (!pEdgeBuffer || !pRawAlloc) {
+            free(pEdgeBuffer);
+            free(pRawAlloc);
             vsapi->setFilterError("DeCross: out of memory.", frameCtx);
             vsapi->freeFrame(dst);
             vsapi->freeFrame(srcP);
@@ -330,11 +353,12 @@ static const VSFrame *VS_CC deCrossGetFrame(int n, int activationReason, void *i
         }
 
         if (d->vi->format.bytesPerSample == 1)
-            DeCrossFrame<uint8_t>(d, src, srcP, srcF, dst, pEdgeBuffer, nEdgeBufferSize, vsapi);
+            DeCrossFrame<uint8_t>(d, src, srcP, srcF, dst, pEdgeBuffer, pRawEdge, nEdgeBufferSize, vsapi);
         else
-            DeCrossFrame<uint16_t>(d, src, srcP, srcF, dst, pEdgeBuffer, nEdgeBufferSize, vsapi);
+            DeCrossFrame<uint16_t>(d, src, srcP, srcF, dst, pEdgeBuffer, pRawEdge, nEdgeBufferSize, vsapi);
 
         free(pEdgeBuffer);
+        free(pRawAlloc);
 
         vsapi->freeFrame(srcP);
         vsapi->freeFrame(src);
