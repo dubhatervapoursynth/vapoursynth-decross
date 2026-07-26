@@ -1,4 +1,4 @@
-#include <cstddef>
+﻿#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -115,39 +115,12 @@ static void DeCrossFrame(const DeCrossData *d, const VSFrame *src, const VSFrame
         const T* pSrcP = (const T *)vsapi->getReadPtr(srcP, 0) + nLumaTop;
         const T* pSrcF = (const T *)vsapi->getReadPtr(srcF, 0) + nLumaTop;
 
-        const T* pSrcTT = pSrc - nSrcPitch2;
-        const T* pSrcBB = pSrc + nSrcPitch2;
-        const T* pSrcPTT = pSrcP - nSrcPitch2;
-        const T* pSrcPBB = pSrcP + nSrcPitch2;
-        const T* pSrcFTT = pSrcF - nSrcPitch2;
-        const T* pSrcFBB = pSrcF + nSrcPitch2;
-
-        const T* pSrcT = pSrc - nSrcPitch;
-        const T* pSrcB = pSrc + nSrcPitch;
-        const T* pSrcPT = pSrcP - nSrcPitch;
-        const T* pSrcPB = pSrcP + nSrcPitch;
-        const T* pSrcFT = pSrcF - nSrcPitch;
-        const T* pSrcFB = pSrcF + nSrcPitch;
-
         const T* pSrcU = (const T *)vsapi->getReadPtr(src, 1) + nChromaTop;
         const T* pSrcUP = (const T *)vsapi->getReadPtr(srcP, 1) + nChromaTop;
         const T* pSrcUF = (const T *)vsapi->getReadPtr(srcF, 1) + nChromaTop;
         const T* pSrcV = (const T *)vsapi->getReadPtr(src, 2) + nChromaTop;
         const T* pSrcVP = (const T *)vsapi->getReadPtr(srcP, 2) + nChromaTop;
         const T* pSrcVF = (const T *)vsapi->getReadPtr(srcF, 2) + nChromaTop;
-
-        const T* pSrcUTT = pSrcU - nSrcPitchU;
-        const T* pSrcUBB = pSrcU + nSrcPitchU;
-        const T* pSrcUPTT = pSrcUP - nSrcPitchU;
-        const T* pSrcUPBB = pSrcUP + nSrcPitchU;
-        const T* pSrcUFTT = pSrcUF - nSrcPitchU;
-        const T* pSrcUFBB = pSrcUF + nSrcPitchU;
-        const T* pSrcVTT = pSrcV - nSrcPitchU;
-        const T* pSrcVBB = pSrcV + nSrcPitchU;
-        const T* pSrcVPTT = pSrcVP - nSrcPitchU;
-        const T* pSrcVPBB = pSrcVP + nSrcPitchU;
-        const T* pSrcVFTT = pSrcVF - nSrcPitchU;
-        const T* pSrcVFBB = pSrcVF + nSrcPitchU;
 
         const T* pSrcUMini;
         const T* pSrcVMini;
@@ -161,6 +134,35 @@ static void DeCrossFrame(const DeCrossData *d, const VSFrame *src, const VSFrame
         const T nDebugV = (T)((1 << d->vi->format.bitsPerSample) - 1);
 
         for (int nY = nHeightU - 1 - nFirstRow; nY > 2; nY--) {
+            // the tap rows are a fixed distance from the row bases, so derive them here
+            // instead of carrying two dozen extra pointers through the whole loop
+            const T* pSrcTT = pSrc - nSrcPitch2;
+            const T* pSrcBB = pSrc + nSrcPitch2;
+            const T* pSrcPTT = pSrcP - nSrcPitch2;
+            const T* pSrcPBB = pSrcP + nSrcPitch2;
+            const T* pSrcFTT = pSrcF - nSrcPitch2;
+            const T* pSrcFBB = pSrcF + nSrcPitch2;
+
+            const T* pSrcT = pSrc - nSrcPitch;
+            const T* pSrcB = pSrc + nSrcPitch;
+            const T* pSrcPT = pSrcP - nSrcPitch;
+            const T* pSrcPB = pSrcP + nSrcPitch;
+            const T* pSrcFT = pSrcF - nSrcPitch;
+            const T* pSrcFB = pSrcF + nSrcPitch;
+
+            const T* pSrcUTT = pSrcU - nSrcPitchU;
+            const T* pSrcUBB = pSrcU + nSrcPitchU;
+            const T* pSrcUPTT = pSrcUP - nSrcPitchU;
+            const T* pSrcUPBB = pSrcUP + nSrcPitchU;
+            const T* pSrcUFTT = pSrcUF - nSrcPitchU;
+            const T* pSrcUFBB = pSrcUF + nSrcPitchU;
+            const T* pSrcVTT = pSrcV - nSrcPitchU;
+            const T* pSrcVBB = pSrcV + nSrcPitchU;
+            const T* pSrcVPTT = pSrcVP - nSrcPitchU;
+            const T* pSrcVPBB = pSrcVP + nSrcPitchU;
+            const T* pSrcVFTT = pSrcVF - nSrcPitchU;
+            const T* pSrcVFBB = pSrcVF + nSrcPitchU;
+
             memset(pEdgeBuffer, 0, nEdgeBufferSize);
 
             EdgeCheck(pSrc, pEdgeBuffer, nRowSizeU, d->nYThreshold, d->nMargin);
@@ -272,39 +274,12 @@ static void DeCrossFrame(const DeCrossData *d, const VSFrame *src, const VSFrame
             pSrcP += nSrcPitch << subSamplingH;
             pSrcF += nSrcPitch << subSamplingH;
 
-            pSrcTT += nSrcPitch << subSamplingH;
-            pSrcBB += nSrcPitch << subSamplingH;
-            pSrcPTT += nSrcPitch << subSamplingH;
-            pSrcPBB += nSrcPitch << subSamplingH;
-            pSrcFTT += nSrcPitch << subSamplingH;
-            pSrcFBB += nSrcPitch << subSamplingH;
-
-            pSrcT += nSrcPitch << subSamplingH;
-            pSrcB += nSrcPitch << subSamplingH;
-            pSrcPT += nSrcPitch << subSamplingH;
-            pSrcPB += nSrcPitch << subSamplingH;
-            pSrcFT += nSrcPitch << subSamplingH;
-            pSrcFB += nSrcPitch << subSamplingH;
-
             pSrcU += nSrcPitchU;
             pSrcUP += nSrcPitchU;
             pSrcUF += nSrcPitchU;
             pSrcV += nSrcPitchU;
             pSrcVP += nSrcPitchU;
             pSrcVF += nSrcPitchU;
-
-            pSrcUTT += nSrcPitchU;
-            pSrcUBB += nSrcPitchU;
-            pSrcUPTT += nSrcPitchU;
-            pSrcUPBB += nSrcPitchU;
-            pSrcUFTT += nSrcPitchU;
-            pSrcUFBB += nSrcPitchU;
-            pSrcVTT += nSrcPitchU;
-            pSrcVBB += nSrcPitchU;
-            pSrcVPTT += nSrcPitchU;
-            pSrcVPBB += nSrcPitchU;
-            pSrcVFTT += nSrcPitchU;
-            pSrcVFBB += nSrcPitchU;
 
             pDestU += nDestPitchU;
             pDestV += nDestPitchU;
