@@ -22,17 +22,26 @@ Usage
 Parameters:
     *clip*
         A clip to process. It must have constant format and dimensions
-        and it must be YUV420P8 or YUV422P8.
+        and it must be 8..16 bit integer YUV with 4:2:0 or 4:2:2
+        subsampling.
 
     *thresholdy*
-        Edge detection threshold. Must be between 0 and 255.
+        Edge detection threshold. Must be between 0 and the maximum
+        sample value of the clip, so 0 and 255 at 8 bit and 0 and 65535
+        at 16 bit.
+
+        The value is compared against raw sample values and is not
+        scaled by the bit depth, so it has to be adjusted when moving a
+        script to a deeper clip.
 
         Smaller values will detect and filter more edges.
 
         Default: 30.
 
     *noise*
-        Luma difference threshold. Must be between 0 and 255.
+        Luma difference threshold. Must be between 0 and the maximum
+        sample value of the clip, and like *thresholdy* it is compared
+        against raw sample values and is not scaled by the bit depth.
 
         Smaller values will filter more conservatively.
 

@@ -1,5 +1,5 @@
 project('DeCross', 'cpp',
-        version: '2',
+        version: '3',
         default_options: ['cpp_std=c++11', 'buildtype=release'],
         meson_version: '>=0.46')
 
@@ -19,11 +19,6 @@ ldflags = [
 
 
 host_cpu_family = host_machine.cpu_family()
-
-if host_cpu_family.startswith('x86')
-  cflags += ['-mfpmath=sse', '-msse2', '-DDECROSS_X86=1']
-endif
-
 
 host_system = host_machine.system()
 
