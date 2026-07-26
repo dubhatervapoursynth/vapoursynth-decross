@@ -1,3 +1,4 @@
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -177,10 +178,10 @@ static const VSFrame *VS_CC deCrossGetFrame(int n, int activationReason, void *i
 
         const int nHeightU = vsapi->getFrameHeight(src, 1);
         const int nRowSizeU = vsapi->getFrameWidth(src, 1);
-        const int nSrcPitch = vsapi->getStride(src, 0);
-        const int nSrcPitch2 = nSrcPitch * 2;
-        const int nSrcPitchU = vsapi->getStride(src, 1);
-        const int nDestPitchU = vsapi->getStride(dst, 1);
+        const ptrdiff_t nSrcPitch = vsapi->getStride(src, 0);
+        const ptrdiff_t nSrcPitch2 = nSrcPitch * 2;
+        const ptrdiff_t nSrcPitchU = vsapi->getStride(src, 1);
+        const ptrdiff_t nDestPitchU = vsapi->getStride(dst, 1);
 
         const int subSamplingH = d->vi->format.subSamplingH;
 
@@ -192,8 +193,8 @@ static const VSFrame *VS_CC deCrossGetFrame(int n, int activationReason, void *i
         // this is row 1 for 420 but row 2 for 422, where a chroma row is a single luma row
         const int nFirstRow = (2 + nLumaPerChroma - 1) / nLumaPerChroma;
 
-        const int nLumaTop = nSrcPitch * nLumaPerChroma * nFirstRow;
-        const int nChromaTop = nSrcPitchU * nFirstRow;
+        const ptrdiff_t nLumaTop = nSrcPitch * nLumaPerChroma * nFirstRow;
+        const ptrdiff_t nChromaTop = nSrcPitchU * nFirstRow;
 
         const uint8_t* pSrc = vsapi->getReadPtr(src, 0) + nLumaTop;
         const uint8_t* pSrcP = vsapi->getReadPtr(srcP, 0) + nLumaTop;
