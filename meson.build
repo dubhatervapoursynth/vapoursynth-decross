@@ -10,9 +10,11 @@ sources = [
   'src/decross.cpp',
 ]
 
-cxx = meson.get_compiler('cpp')
-
 py = import('python').find_installation(pure: false)
+
+incdir = include_directories(
+    run_command(py, '-c', 'import vapoursynth as vs; print(vs.get_include())', check: true).stdout().strip(),
+)
 
 shared_module('decross',
     sources,
